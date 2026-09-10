@@ -398,7 +398,7 @@ const GROUPS = ['kesadaran','pernafasan','risikojatuh','nyeridada','skalanyeri',
 // Contoh: 'https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxx/exec'
 // Kosongkan ('') kalau belum ingin sinkron ke Google Sheets — aplikasi tetap
 // jalan normal pakai localStorage saja.
-const SHEET_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwe2xrREgt1zVlxHQpr1AKu9Rdf0T-BuDfH3tgn6K5JACnZpE8lfAaXKA2Go4mkZFBq6w/exec';
+const SHEET_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbw-TRZPZyZKdsbh8gO95QmQlem6PlT1IG94Ua_pKYc9mzJzzsP3_dWnT9x5b58yBuK72A/exec';
 
 // URL versi web (dashboard online) dari aplikasi yang sama, di-host terpisah
 // (mis. GitHub Pages). Tombol "🌐 Buka Dashboard Web" akan membuka alamat ini.
@@ -420,34 +420,63 @@ function saveRecords(list){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
 }
 
+/* ---------- Pemanggilan Apps Script lewat JSONP (bukan fetch) ---------- */
+// CATATAN PENTING: fetch() lintas-domain (dari GitHub Pages ke
+// script.google.com) bisa diblokir browser karena keterbatasan CORS di
+// Google Apps Script Web App — walau mengetik URL yang sama langsung di
+// address bar selalu berhasil (itu bukan permintaan lintas-domain).
+// JSONP memuat respons lewat tag <script>, yang TIDAK terikat aturan CORS
+// sama sekali, sehingga jauh lebih andal untuk memanggil Apps Script dari
+// domain lain. Dipakai untuk semua komunikasi ke SHEET_WEBAPP_URL.
+let jsonpCounter = 0;
+function jsonpRequest(url, timeoutMs){
+  return new Promise((resolve, reject)=>{
+    const cbName = 'sitepatCb' + (jsonpCounter++) + '_' + Date.now();
+    const script = document.createElement('script');
+    let finished = false;
+    const cleanup = ()=>{
+      delete window[cbName];
+      if(script.parentNode) script.parentNode.removeChild(script);
+    };
+    window[cbName] = (data)=>{
+      finished = true;
+      cleanup();
+      resolve(data);
+    };
+    script.onerror = ()=>{
+      if(!finished){ finished = true; cleanup(); reject(new Error('JSONP gagal dimuat')); }
+    };
+    const sep = url.indexOf('?') >= 0 ? '&' : '?';
+    script.src = url + sep + 'callback=' + cbName;
+    document.body.appendChild(script);
+    setTimeout(()=>{
+      if(!finished){ finished = true; cleanup(); reject(new Error('JSONP timeout')); }
+    }, timeoutMs || 10000);
+  });
+}
+
 /* ---------- Google Sheets sync (best-effort, non-blocking) ---------- */
 // Push satu record (tambah/ubah) ke Sheet. Gagal diam-diam kalau offline —
 // data tetap aman di localStorage dan akan tersinkron lagi lain kali
 // syncPullAll() jalan atau saat record berikutnya berhasil terkirim.
 function syncPush(record){
   if(!SHEET_WEBAPP_URL) return;
-  fetch(SHEET_WEBAPP_URL, {
-    method: 'POST',
-    headers: {'Content-Type': 'text/plain;charset=utf-8'}, // hindari CORS preflight
-    body: JSON.stringify(record)
-  }).catch(()=>{ /* offline / gagal kirim: dibiarkan, data lokal tetap aman */ });
+  const url = SHEET_WEBAPP_URL + '?action=save&data=' + encodeURIComponent(JSON.stringify(record));
+  jsonpRequest(url).catch(()=>{ /* offline / gagal kirim: dibiarkan, data lokal tetap aman */ });
 }
 function syncDelete(id){
   if(!SHEET_WEBAPP_URL) return;
-  fetch(SHEET_WEBAPP_URL, {
-    method: 'POST',
-    headers: {'Content-Type': 'text/plain;charset=utf-8'},
-    body: JSON.stringify({action:'delete', id})
-  }).catch(()=>{});
+  const url = SHEET_WEBAPP_URL + '?action=delete&id=' + encodeURIComponent(id);
+  jsonpRequest(url).catch(()=>{});
 }
+
 // Tarik semua data dari Sheet dan gabungkan ke localStorage (dedupe by id).
 // Dipanggil sekali saat aplikasi dibuka, supaya kalau ada data yang masuk
 // dari device/petugas lain, otomatis muncul juga di device ini.
 async function syncPullAll(){
   if(!SHEET_WEBAPP_URL) return;
   try{
-    const res = await fetch(SHEET_WEBAPP_URL);
-    const remote = await res.json();
+    const remote = await jsonpRequest(SHEET_WEBAPP_URL);
     if(!Array.isArray(remote)) return;
     const local = loadRecords();
     const merged = local.slice();
@@ -522,12 +551,8 @@ document.getElementById('loginSubmitBtn').addEventListener('click', async ()=>{
   btn.textContent = 'Memeriksa...';
 
   try{
-    const res = await fetch(SHEET_WEBAPP_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      body: JSON.stringify({action:'login', username, password})
-    });
-    const result = await res.json();
+    const url = SHEET_WEBAPP_URL + '?action=login&username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+    const result = await jsonpRequest(url);
     if(result.ok){
       const session = {username, nama: result.nama};
       saveSession(session);
