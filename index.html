@@ -451,7 +451,7 @@ function jsonpRequest(url, timeoutMs){
     document.body.appendChild(script);
     setTimeout(()=>{
       if(!finished){ finished = true; cleanup(); reject(new Error('JSONP timeout')); }
-    }, timeoutMs || 10000);
+    }, timeoutMs || 60000);
   });
 }
 
