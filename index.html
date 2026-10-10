@@ -314,7 +314,7 @@
       <div style="overflow-x:auto;">
         <table id="dataTable">
           <thead><tr>
-            <th>Tgl/Jam</th><th>No. RM</th><th>Nama</th><th>Kategori</th><th>Keputusan</th><th>Petugas</th><th></th>
+            <th>Tgl/Jam</th><th>No. RM</th><th>Nama</th><th>Kategori</th><th>Keputusan</th><th>Petugas</th><th>Durasi</th><th></th>
           </tr></thead>
           <tbody id="dataTbody"></tbody>
         </table>
@@ -387,7 +387,7 @@
    Data model per record (see docs for full schema):
    { id, tanggal, jam, norm, nama, rujukan, alamat,
      kesadaran, pernafasan, risikojatuh, nyeridada, lokasinyeri,
-     skalanyeri, batuk, kategori, keputusan, petugas, savedAt }
+     skalanyeri, batuk, kategori, keputusan, petugas, savedAt, waktuMulai, durasiDetik }
    Storage: window.localStorage (local cache) + Google Sheets via Apps
    Script Web App (remote copy). See SHEET_WEBAPP_URL below.
    ============================================================ */
@@ -612,6 +612,14 @@ setInterval(tickClock,1000); tickClock();
 document.getElementById('f_tanggal').value = todayStr();
 document.getElementById('f_jam').value = nowTime();
 
+/* ---------- Pencatatan waktu mulai skrining (untuk durasi) ---------- */
+let waktuMulai = null;
+function markStart(){ if(!waktuMulai) waktuMulai = new Date(); }
+document.getElementById('view-skrining').addEventListener('input', markStart);
+document.getElementById('view-skrining').addEventListener('click', e=>{
+  if(e.target.closest('.opt')) markStart();
+});
+
 /* ---------- Option selection + triage engine ---------- */
 document.querySelectorAll('.opt-group .opt').forEach(opt=>{
   opt.addEventListener('click', ()=>{
@@ -698,7 +706,9 @@ document.getElementById('btnSimpan').addEventListener('click', ()=>{
     kategori: kategori,
     keputusan: keputusan,
     petugas: document.getElementById('f_petugas').value.trim(),
-    savedAt: new Date().toISOString()
+    savedAt: new Date().toISOString(),
+    waktuMulai: (waktuMulai || new Date()).toISOString(),
+    durasiDetik: Math.max(0, Math.round((Date.now() - (waktuMulai || new Date()).getTime())/1000))
   };
   const list = loadRecords();
   list.push(rec);
@@ -710,6 +720,7 @@ document.getElementById('btnSimpan').addEventListener('click', ()=>{
 
 document.getElementById('btnReset').addEventListener('click', resetForm);
 function resetForm(){
+  waktuMulai = null;
   document.querySelectorAll('#view-skrining input[type=text]').forEach(i=>i.value='');
   document.getElementById('f_tanggal').value = todayStr();
   document.getElementById('f_jam').value = nowTime();
@@ -725,6 +736,29 @@ function showToast(msg){
   t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>t.classList.remove('show'), 2600);
+}
+
+/* ---------- Durasi skrining ---------- */
+function fmtDurasi(d){
+  if(d===undefined || d===null || d==='' || isNaN(Number(d))) return '-';
+  d = Number(d);
+  const m = Math.floor(d/60), s = d%60;
+  return m>0 ? m+' mnt '+s+' dtk' : s+' dtk';
+}
+// Durasi valid: ada nilainya dan <= 60 menit (di atas itu dianggap form dibiarkan terbuka)
+function validDurasi(list){
+  return list.map(r=>Number(r.durasiDetik))
+    .filter(x=>r_ok(x));
+}
+function r_ok(x){ return !isNaN(x) && x>=0 && x<=3600; }
+function statDurasi(list){
+  const v = validDurasi(list.filter(r=>r.durasiDetik!==undefined && r.durasiDetik!==''));
+  if(!v.length) return null;
+  const sum = v.reduce((a,b)=>a+b,0);
+  const sorted = v.slice().sort((a,b)=>a-b);
+  const mid = Math.floor(sorted.length/2);
+  const med = sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
+  return {n:v.length, mean:Math.round(sum/v.length), median:Math.round(med)};
 }
 
 /* ---------- Dashboard ---------- */
@@ -765,6 +799,8 @@ function renderDashboard(){
     {name:'Ketepatan identifikasi pasien', target:'≥ 95%', value: ketepatan+'%', ok: ketepatan>=95},
     {name:'Kepatuhan petugas menggunakan aplikasi', target:'≥ 90%', value: kepatuhan+'%', ok:true},
     {name:'Tidak ada kasus salah alur pasien gawat darurat', target:'100%', value: noMissedRed?'100%':'Ditemukan selisih', ok: noMissedRed},
+    {name:'Rata-rata waktu per skrining (hari ini)', target:'-', value: (sd=>sd? fmtDurasi(sd.mean)+' (n='+sd.n+')':'Belum ada data')(statDurasi(todays)), ok:true},
+    {name:'Rata-rata waktu per skrining (seluruh data)', target:'-', value: (sa=>sa? fmtDurasi(sa.mean)+' · median '+fmtDurasi(sa.median)+' (n='+sa.n+')':'Belum ada data')(statDurasi(all)), ok:true},
     {name:'Total data terekam (basis evaluasi mutu)', target:'-', value: all.length+' skrining', ok:true}
   ];
   document.getElementById('indicatorList').innerHTML = indicators.map(i=>`
@@ -823,6 +859,7 @@ function renderTable(){
       <td><span class="tag ${r.kategori}">${r.kategori}</span></td>
       <td>${r.keputusan}</td>
       <td>${r.petugas||'-'}</td>
+      <td>${fmtDurasi(r.durasiDetik)}</td>
       <td><button class="icon-btn" data-del="${r.id}" title="Hapus">🗑️</button></td>
     </tr>`).join('');
 
@@ -868,7 +905,8 @@ function toSheetRows(records){
     'Kesadaran': r.kesadaran, 'Pernafasan': r.pernafasan, 'Risiko Jatuh': r.risikojatuh,
     'Nyeri Dada': r.nyeridada, 'Lokasi Nyeri': r.lokasinyeri, 'Skala Nyeri': r.skalanyeri,
     'Batuk': r.batuk, 'Kategori': r.kategori.toUpperCase(), 'Keputusan': r.keputusan,
-    'Petugas': r.petugas, 'Waktu Simpan': r.savedAt
+    'Petugas': r.petugas, 'Waktu Simpan': r.savedAt,
+    'Waktu Mulai': r.waktuMulai||'', 'Durasi (detik)': (r.durasiDetik===undefined?'':r.durasiDetik)
   }));
 }
 // Escape helper for CSV fields (quote fields containing comma/quote/newline)
